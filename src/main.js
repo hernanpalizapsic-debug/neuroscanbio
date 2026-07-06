@@ -1,17 +1,25 @@
-// NeuroScan v18 — entry point.
+// NeuroScan — entry point.
 // Flow: start → quiz → HRV (finger+flash) → facial (rPPG + blink + saccade + PLR)
-//       → computeMetrics → writeMetrics → renderReport
+//       → computeMetrics → writeMetrics → redirect a Reset 3.0
 //
-// Measurement logic intentionally preserved verbatim from the v18 prototype;
-// only orchestration and DOM wiring were moved into modules.
+// Manejo de error: si writeMetrics tira WriteMetricsError, mostramos una vista
+// de error con acciones (reintentar / descargar JSON / ver informe local).
+// Nada silencioso — el user siempre sabe qué pasó y qué opciones tiene.
+//
+// Guard adicional: en PROD, si la app se abrió SIN token de Reset 3.0
+// (?uid=&tipo=&token=), no arrancamos el quiz — mostramos un cartel apuntando
+// a Reset 3.0. En DEV eso está permitido para poder probar la eval standalone.
 
 import { bio } from './state.js';
 import { mean, std, median } from './utils.js';
-import { show, log, speak, renderQuiz, renderReport } from './ui.js';
+import { show, log, speak, renderQuiz, renderReport, renderError } from './ui.js';
 import { startHRV, bindHrvButton } from './hrv.js';
 import { startFace } from './facial.js';
 import { taskPLR } from './plr.js';
-import { writeMetrics } from './metrics-sink.js';
+import { writeMetrics, downloadMedicion, WriteMetricsError } from './metrics-sink.js';
+import { getSession } from './auth-bridge.js';
+
+const RESET_URL = import.meta.env.VITE_RESET_URL || 'https://reset30.vercel.app';
 
 function computeMetrics() {
   const blinkRate = Math.round(bio.blink.count / (8 / 60));
@@ -45,23 +53,111 @@ function computeMetrics() {
   };
 }
 
+/**
+ * Guard antes de arrancar la eval:
+ * - En DEV, siempre dejamos arrancar (útil para probar el flow local).
+ * - En PROD, si no hay sesión de Reset 3.0, mostramos error y no arrancamos.
+ * @returns {Promise<boolean>} true si podés arrancar la eval
+ */
+async function puedeArrancar() {
+  if (import.meta.env.DEV) return true;
+  try {
+    const session = await getSession();
+    if (session.standalone || !session.uid) {
+      renderError({
+        title: 'Esta app se abre desde Reset 3.0',
+        message:
+          'Para hacer tu evaluación, volvé a Reset 3.0 y tocá "Comenzar evaluación". El link tiene que traer tu token de sesión.',
+        actions: [
+          {
+            label: 'Ir a Reset 3.0',
+            variant: 'primary',
+            onClick: () => {
+              window.location.href = RESET_URL;
+            },
+          },
+        ],
+      });
+      return false;
+    }
+    return true;
+  } catch (err) {
+    renderError({
+      title: 'No pudimos verificar tu sesión',
+      message:
+        'El token de acceso no pudo validarse. Puede haber vencido o hay un problema con la configuración de Firebase. Volvé a abrir la evaluación desde Reset 3.0.',
+      detail: err?.message || String(err),
+      actions: [
+        {
+          label: 'Ir a Reset 3.0',
+          variant: 'primary',
+          onClick: () => {
+            window.location.href = RESET_URL;
+          },
+        },
+      ],
+    });
+    return false;
+  }
+}
+
 async function finish() {
   show('view-loading');
   log('computing');
   const payload = computeMetrics();
   try {
     await writeMetrics(payload);
-  } catch (e) {
-    console.warn('[neuroscan] writeMetrics failed', e);
+    // Si writeMetrics resolvió sin error, ya disparó window.location.href
+    // y la página está por navegar. No hacemos nada más.
+  } catch (err) {
+    const isKnown = err instanceof WriteMetricsError;
+    const medicion = isKnown ? err.medicion : payload;
+
+    const title =
+      !isKnown
+        ? 'Ups, algo falló'
+        : err.code === 'STANDALONE'
+        ? 'Esta app se abre desde Reset 3.0'
+        : err.code === 'AUTH_FAILED'
+        ? 'No pudimos verificar tu sesión'
+        : 'La medición no se pudo guardar';
+
+    const detail = isKnown
+      ? err.cause?.message || err.cause?.code || ''
+      : err?.message || String(err);
+
+    renderError({
+      title,
+      message: isKnown
+        ? err.message
+        : 'Ocurrió un error inesperado al finalizar la evaluación. Podés descargar tus métricas o ver el informe local.',
+      detail,
+      actions: [
+        {
+          label: 'Reintentar subida',
+          variant: 'primary',
+          onClick: () => finish(),
+        },
+        {
+          label: 'Descargar mis métricas (JSON)',
+          onClick: () => downloadMedicion(medicion),
+        },
+        {
+          label: 'Ver informe local',
+          onClick: () => renderReport(payload),
+        },
+      ],
+    });
   }
-  renderReport(payload);
 }
 
 function startFacePhase() {
   return startFace({ runPLR: taskPLR, onComplete: finish });
 }
 
-document.getElementById('btn-init').onclick = () => {
+document.getElementById('btn-init').onclick = async () => {
+  const ok = await puedeArrancar();
+  if (!ok) return;
   speak('Iniciando protocolo. Respondé las preguntas.');
   show('view-quiz');
   renderQuiz(() => startHRV());

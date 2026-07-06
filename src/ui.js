@@ -12,9 +12,32 @@ export const speak = (t) => {
   speechSynthesis.speak(u);
 };
 
-const VIEWS = ['view-start', 'view-quiz', 'view-hrv', 'view-face', 'view-loading', 'view-report'];
+const VIEWS = ['view-start', 'view-quiz', 'view-hrv', 'view-face', 'view-loading', 'view-report', 'view-error'];
 export const show = (id) =>
   VIEWS.forEach((v) => document.getElementById(v).classList.toggle('hidden', v !== id));
+
+/**
+ * @param {{ title: string, message: string, detail?: string, actions?: Array<{label:string, onClick:()=>void, variant?:'primary'|'secondary'}> }} opts
+ */
+export function renderError({ title, message, detail, actions }) {
+  show('view-error');
+  log('error');
+  document.getElementById('error-title').innerText = title || 'Ups, algo falló';
+  document.getElementById('error-msg').innerText = message || '';
+  document.getElementById('error-detail').innerText = detail || '';
+  const container = document.getElementById('error-actions');
+  container.innerHTML = '';
+  (actions || []).forEach(({ label, onClick, variant }) => {
+    const btn = document.createElement('button');
+    btn.className =
+      variant === 'primary'
+        ? 'w-full py-4 bg-cyan-500 text-black font-black rounded-full uppercase text-xs tracking-widest active:scale-95 transition-all'
+        : 'w-full py-4 border-2 border-cyan-500 text-cyan-400 font-bold rounded-full uppercase text-xs tracking-widest active:scale-95 transition-all';
+    btn.innerText = label;
+    btn.onclick = onClick;
+    container.appendChild(btn);
+  });
+}
 
 export const setInstr = (a, b) => {
   document.getElementById('face-instr').innerText = a;

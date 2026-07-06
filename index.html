@@ -109,6 +109,15 @@
     <div class="w-14 h-14 border-4 border-cyan-500 border-t-transparent rounded-full animate-spin"></div>
     <p class="text-cyan-400 text-[10px] font-bold tracking-[0.4em] animate-pulse uppercase">Procesando métricas</p>
   </div>
+
+  <!-- ERROR (write falló / sesión ausente / auth mismatch) -->
+  <div id="view-error" class="hidden absolute inset-0 bg-black/95 z-[150] flex flex-col items-center justify-center space-y-4 p-6 overflow-y-auto">
+    <div class="text-5xl">⚠️</div>
+    <h2 id="error-title" class="text-lg font-bold text-white text-center px-4"></h2>
+    <p id="error-msg" class="text-xs text-slate-300 text-center max-w-md leading-relaxed"></p>
+    <p id="error-detail" class="text-[9px] text-slate-600 text-center max-w-md mono break-all"></p>
+    <div id="error-actions" class="flex flex-col gap-3 w-full max-w-xs mt-4"></div>
+  </div>
 </main>
 
 <!-- INFORME -->
