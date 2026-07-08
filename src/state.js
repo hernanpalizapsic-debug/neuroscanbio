@@ -5,7 +5,12 @@ export const bio = {
     confidence: 'Ninguna', measurable: false,
     diag: { torch: 'desconocido', avgR: null, ampPct: null },
   },
-  rppg: { raw: [], bpm: null, measurable: false },
+  rppg: {
+    raw: [],
+    bpm: null, rmssd: null, sdnn: null, beats: null,
+    confidence: 'Ninguna', rmssd_confidence: 'Ninguna',
+    snr: null, measurable: false,
+  },
   xval: { bpmDiff: null, agreement: null },
   blink: { count: 0, durations: [], ear: [] },
   saccade: { targets: [], gaze: [], errors: [] },

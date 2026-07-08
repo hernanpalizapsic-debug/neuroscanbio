@@ -60,7 +60,11 @@ function toMedicion(payload, tipo) {
       },
       camara: {
         disponible: true,
-        hrv: payload.hrv,
+        // fuentes.camara.hrv ahora contiene la rPPG (POS + FFT + SNR) — sesión
+        // sin dedo aún se registra con datos de cámara. El HRV del dedo se
+        // preserva en hrv_dedo (opcional) para cross-validación / histórico.
+        hrv: payload.rppg,
+        hrv_dedo: payload.hrv,
         oculomotor: {
           blinkRate: payload.blinkRate,
           avgBlinkMs: payload.avgBlinkMs,
@@ -69,7 +73,8 @@ function toMedicion(payload, tipo) {
           saccadeTrackError: payload.saccadeTrackError,
         },
         plr: payload.plr,
-        confianza_general: payload.hrv?.confidence || 'Ninguna',
+        // confianza_general viene del HR de rPPG (fuente cámara canónica).
+        confianza_general: payload.rppg?.confidence || 'Ninguna',
       },
       // El quiz local usa keys en inglés (stress/energy/fatigue); el contrato
       // Firestore las quiere en castellano. Mapeamos acá para no tocar state.js.

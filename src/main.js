@@ -36,7 +36,18 @@ function computeMetrics() {
           confidence: bio.hrv.confidence,
         }
       : { ok: false, diag: bio.hrv.diag, beatsDetected: bio.hrv.peaks.length },
-    rppg: bio.rppg.measurable ? { ok: true, bpm: bio.rppg.bpm } : { ok: false },
+    rppg: bio.rppg.measurable
+      ? {
+          ok: true,
+          bpm: bio.rppg.bpm,
+          rmssd: bio.rppg.rmssd,
+          sdnn: bio.rppg.sdnn,
+          beats: bio.rppg.beats,
+          confidence: bio.rppg.confidence,
+          rmssd_confidence: bio.rppg.rmssd_confidence,
+          snr: bio.rppg.snr,
+        }
+      : { ok: false, snr: bio.rppg.snr, confidence: bio.rppg.confidence },
     crossValidation: bio.xval.agreement
       ? { agreement: bio.xval.agreement, bpmDiff: bio.xval.bpmDiff }
       : null,

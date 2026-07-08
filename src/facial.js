@@ -1,6 +1,7 @@
 import { bio } from './state.js';
-import { mean, median, detectPeaks, dist } from './utils.js';
+import { dist } from './utils.js';
 import { show, log, speak, setInstr, faceTimerEl } from './ui.js';
+import { sampleRegionsRGB, analyzeRPPG_v2 } from './rppg.js';
 
 const L_EYE = { top: [159, 145], side: [33, 133] };
 const R_EYE = { top: [386, 374], side: [362, 263] };
@@ -8,7 +9,6 @@ export const L_IRIS_CENTER = 468;
 export const R_IRIS_CENTER = 473;
 export const L_IRIS_RING = [469, 470, 471, 472];
 const NOSE_TIP = 1;
-const FOREHEAD = [10, 338, 297, 67, 109];
 
 // Shared face context — plr.js reads these references for pupil measurement.
 export const faceContext = {
@@ -40,28 +40,6 @@ async function initMesh() {
   });
 }
 
-const _rc = document.createElement('canvas');
-const _rctx = _rc.getContext('2d', { willReadFrequently: true });
-
-function sampleForeheadGreen() {
-  if (!faceContext.latestLandmarks || !faceContext.latestFrame) return null;
-  const lm = faceContext.latestLandmarks;
-  const v = faceContext.latestFrame;
-  const vw = v.videoWidth, vh = v.videoHeight;
-  const xs = FOREHEAD.map((i) => lm[i].x * vw);
-  const ys = FOREHEAD.map((i) => lm[i].y * vh);
-  const x0 = Math.min(...xs), x1 = Math.max(...xs);
-  const y0 = Math.min(...ys), y1 = Math.max(...ys);
-  const w = Math.max(4, (x1 - x0) | 0);
-  const h = Math.max(4, (y1 - y0) | 0);
-  _rc.width = w; _rc.height = h;
-  _rctx.drawImage(v, x0, y0, w, h, 0, 0, w, h);
-  const px = _rctx.getImageData(0, 0, w, h).data;
-  let g = 0;
-  for (let i = 0; i < px.length; i += 4) g += px[i + 1];
-  return g / (px.length / 4);
-}
-
 export async function startFace({ runPLR, onComplete }) {
   show('view-face');
   document.getElementById('dot-1').classList.replace('bg-white/10', 'bg-cyan-500');
@@ -84,9 +62,17 @@ export async function startFace({ runPLR, onComplete }) {
     });
     cam.start();
     await waitForFace();
+    // rPPG v2: muestreamos R/G/B de 3 skin patches (frente + 2 mejillas)
+    // siguiendo los landmarks frame a frame. El pipeline POS+FFT corre al
+    // final de la fase facial en analyzeRPPG.
     const rppgTimer = setInterval(() => {
-      const g = sampleForeheadGreen();
-      if (g != null) bio.rppg.raw.push({ t: performance.now() / 1000, v: g });
+      const rgb = sampleRegionsRGB(faceContext.latestLandmarks, faceContext.latestFrame);
+      if (rgb) {
+        bio.rppg.raw.push({
+          t: performance.now() / 1000,
+          r: rgb.r, g: rgb.g, b: rgb.b,
+        });
+      }
     }, 33);
     await taskBlink(8);
     await taskSaccade(10);
@@ -187,16 +173,12 @@ function taskSaccade(sec) {
 }
 
 function analyzeRPPG() {
-  if (bio.rppg.raw.length < 200) { bio.rppg.measurable = false; return; }
-  const peaks = detectPeaks(bio.rppg.raw);
-  if (peaks.length < 8) { bio.rppg.measurable = false; return; }
-  let ibis = [];
-  for (let i = 1; i < peaks.length; i++) ibis.push((peaks[i].t - peaks[i - 1].t) * 1000);
-  ibis = ibis.filter((x) => x > 300 && x < 1500);
-  if (ibis.length < 5) { bio.rppg.measurable = false; return; }
-  bio.rppg.bpm = Math.round(60000 / median(ibis));
-  bio.rppg.measurable = true;
-  if (bio.hrv.measurable && bio.hrv.bpm) {
+  // Pipeline nuevo: POS + FFT + SNR. Reemplaza el conteo de picos crudo.
+  // Ver src/rppg.js para el detalle del algoritmo.
+  const result = analyzeRPPG_v2(bio.rppg.raw);
+  Object.assign(bio.rppg, result);
+  // Cross-validación dedo↔cara: intacta, útil solo si ambos midieron.
+  if (bio.rppg.measurable && bio.rppg.bpm && bio.hrv.measurable && bio.hrv.bpm) {
     bio.xval.bpmDiff = Math.abs(bio.hrv.bpm - bio.rppg.bpm);
     bio.xval.agreement =
       bio.xval.bpmDiff <= 5 ? 'Alta' : bio.xval.bpmDiff <= 10 ? 'Media' : 'Baja';
