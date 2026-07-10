@@ -12,7 +12,13 @@ export const bio = {
     snr: null, measurable: false,
   },
   xval: { bpmDiff: null, agreement: null },
-  blink: { count: 0, durations: [], ear: [] },
+  blink: {
+    count: 0,
+    durations: [],
+    ear: [],
+    calibratedThreshold: null,  // umbral EAR adaptativo del usuario (median*0.75)
+    countingSec: null,           // duración efectiva de conteo, tras 2s de calibración
+  },
   saccade: { targets: [], gaze: [], errors: [] },
   headJitter: [],
   plr: { baselineDark: [], response: [], measurable: false, constriction: null, latencyMs: null },

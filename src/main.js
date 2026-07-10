@@ -22,7 +22,11 @@ import { getSession } from './auth-bridge.js';
 const RESET_URL = import.meta.env.VITE_RESET_URL || 'https://reset30.vercel.app';
 
 function computeMetrics() {
-  const blinkRate = Math.round(bio.blink.count / (8 / 60));
+  // Escala a per-minute usando la duración efectiva de conteo (tras 2s de
+  // calibración adaptativa). Fallback a 8s si no hubo calibración (ej. la
+  // fase se cortó temprano).
+  const countingSec = bio.blink.countingSec || 8;
+  const blinkRate = Math.round(bio.blink.count / (countingSec / 60));
   const jx = bio.headJitter.map((p) => p.x);
   const jy = bio.headJitter.map((p) => p.y);
   return {

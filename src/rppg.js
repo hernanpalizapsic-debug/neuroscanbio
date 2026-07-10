@@ -321,12 +321,39 @@ export function estimateHR(H, fs) {
 }
 
 // ============================================================
-//  HRV latido-a-latido (opcional, confianza baja/media)
+//  HRV latido-a-latido — DESHABILITADO (validación BrainLink 3.0)
 // ============================================================
+//
+// Esta función ya NO se llama desde analyzeRPPG_v2. Se preserva por
+// referencia histórica y para eventual re-uso si mejoramos el pipeline.
+//
+// Por qué está deshabilitada:
+//   Validación 2026 contra un wearable BrainLink 3.0 mostró que la
+//   estimación RMSSD/SDNN por rPPG facial es sistemáticamente falsa:
+//
+//     - HR:    BrainLink 92 BPM  vs  cámara 93 BPM  (SNR 9.8 dB)  ✓ preciso
+//     - RMSSD: BrainLink 76 ms   vs  cámara 183 ms  (×2.4 overestimation)
+//     - SDNN:  cámara 161.2 ms (sin comparativo, pero consistente con el sesgo)
+//
+//   El HR por FFT (frecuencia dominante en la banda) es robusto porque
+//   extrae la periodicidad global. Pero el RMSSD requiere localización
+//   precisa de cada latido individual, y la señal rPPG post-POS +
+//   bandpass angosto tiene ondulaciones espurias (residuo del ruido de
+//   movimiento y del propio filtrado) que el peak detector confunde con
+//   variabilidad real inter-latido.
+//
+//   Política actual: NO reportar HRV desde rPPG. Un RMSSD inventado es
+//   peor que "no medible" — llegar a Firestore como número corrompe el
+//   histórico del participante y las comparaciones con wearable real.
+//
+//   El HRV del DEDO (finger PPG con flash trasero) es un path distinto
+//   y sigue reportando rmssd/sdnn en fuentes.camara.hrv_dedo — ese path
+//   no fue afectado por la validación.
 
 /**
  * Bandpass ± HRV_BAND_HALF alrededor de HR via FFT zero-out + IFFT,
  * después detección de picos y RMSSD/SDNN.
+ * @deprecated No llamada desde analyzeRPPG_v2. Ver comentario arriba.
  * @returns {{rmssd:number|null, sdnn:number|null, beats:number}}
  */
 export function estimateHRV(H, fs, hrBpm) {
@@ -446,8 +473,9 @@ export function analyzeRPPG_v2(raw) {
   const { bpm, snr } = hrResult;
   const snrRounded = +snr.toFixed(1);
 
-  // Plausibilidad fisiológica
-  if (bpm < 40 || bpm > 200) {
+  // Plausibilidad fisiológica (ajustada a 40-180 según validación BrainLink;
+  // 180 BPM cubre pulso en reposo y actividad ligera; por encima es artefacto).
+  if (bpm < 40 || bpm > 180) {
     return { ...empty, snr: snrRounded };
   }
 
@@ -456,26 +484,18 @@ export function analyzeRPPG_v2(raw) {
     return { ...empty, snr: snrRounded };
   }
 
-  // HRV solo si HR confidence ≥ Media
-  let rmssd = null, sdnn = null, beats = null, rmssd_confidence = 'Ninguna';
-  if (confidence === 'Alta' || confidence === 'Media') {
-    const hrv = estimateHRV(H, TARGET_FS, bpm);
-    if (hrv.rmssd != null) {
-      rmssd = hrv.rmssd;
-      sdnn = hrv.sdnn;
-      beats = hrv.beats;
-      rmssd_confidence = confFromSnr(snr, 'hrv');
-    }
-  }
-
+  // HRV latido-a-latido por rPPG: NUNCA se reporta.
+  // Ver comentario en estimateHRV: validación contra BrainLink 3.0 mostró
+  // que RMSSD/SDNN por rPPG facial son sistemáticamente falsos (×2-3
+  // sobreestimados). Preferimos "no medible" a un número inventado.
   return {
     measurable: true,
     bpm,
-    rmssd,
-    sdnn,
-    beats,
+    rmssd: null,
+    sdnn: null,
+    beats: null,
     confidence,
-    rmssd_confidence,
+    rmssd_confidence: 'Ninguna',
     snr: snrRounded,
   };
 }

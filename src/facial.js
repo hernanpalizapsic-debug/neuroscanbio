@@ -1,5 +1,5 @@
 import { bio } from './state.js';
-import { dist } from './utils.js';
+import { dist, median } from './utils.js';
 import { show, log, speak, setInstr, faceTimerEl } from './ui.js';
 import { sampleRegionsRGB, analyzeRPPG_v2 } from './rppg.js';
 
@@ -96,13 +96,42 @@ function waitForFace() {
   });
 }
 
+// Detector de parpadeo con umbral EAR ADAPTATIVO por usuario.
+//
+// El umbral fijo previo (0.21) generaba falsos positivos crónicos con
+// participantes cuyo baselineEAR en reposo caía cerca del umbral (validado
+// con caso real: baselineEAR 0.219 → 113 blinks/min, fisiológicamente
+// imposible). Ahora:
+//
+//   1. Los primeros CALIB_SEC segundos son de CALIBRACIÓN: solo muestreamos
+//      EAR, no contamos blinks.
+//   2. Al terminar la calibración, calculamos median(EAR calibración) como
+//      baseline de "ojo abierto" y fijamos el umbral de cierre a 75% del
+//      baseline. Esto es proporcional a cada usuario.
+//   3. Un cierre solo cuenta como blink si dura ≥ MIN_CLOSURE_MS
+//      (descartando micro-fluctuaciones bajo umbral).
+//   4. Después de un blink válido hay REFR_MS de refractaria — cualquier
+//      cruce del umbral se ignora hasta que pasen.
+//
+// El blinkRate en main.js usa bio.blink.countingSec (no `sec`) para
+// escalar a per-minute correctamente después de descontar la calibración.
 function taskBlink(sec) {
+  const CALIB_SEC = 2;
+  const MIN_CLOSURE_MS = 80;
+  const REFR_MS = 200;
+
   setInstr('ESTABILIZACIÓN', 'Mirá el lente y parpadeá normal');
   speak('Mantené la mirada en la cámara y parpadeá con naturalidad.');
   document.getElementById('dot-2').classList.replace('bg-white/10', 'bg-cyan-500');
   faceTimerEl().classList.remove('hidden');
-  let left = sec, closed = false, closeStart = 0;
-  const TH = 0.21;
+
+  const startMs = performance.now();
+  let left = sec;
+  let calibratedTh = null;
+  let closed = false;
+  let closeStart = 0;
+  let lastBlinkEndMs = 0;
+
   return new Promise((res) => {
     const t = setInterval(() => {
       faceTimerEl().innerText = left;
@@ -111,6 +140,8 @@ function taskBlink(sec) {
         clearInterval(t);
         clearInterval(sampler);
         faceTimerEl().classList.add('hidden');
+        bio.blink.calibratedThreshold = calibratedTh;
+        bio.blink.countingSec = Math.max(0, sec - CALIB_SEC);
         res();
       }
     }, 1000);
@@ -120,13 +151,37 @@ function taskBlink(sec) {
       const ear = (earFor(lm, L_EYE) + earFor(lm, R_EYE)) / 2;
       bio.blink.ear.push(ear);
       bio.headJitter.push({ x: lm[NOSE_TIP].x, y: lm[NOSE_TIP].y });
-      if (ear < TH && !closed) {
+
+      const now = performance.now();
+      const elapsed = now - startMs;
+
+      // Ventana de calibración: solo colectar, no contar.
+      if (elapsed < CALIB_SEC * 1000) return;
+
+      // Al pasar la calibración, computar el umbral una vez.
+      if (calibratedTh === null) {
+        const baseline = median(bio.blink.ear);
+        if (baseline == null || baseline <= 0) {
+          // Muy poca data — abort a un umbral conservador.
+          calibratedTh = 0.20;
+        } else {
+          calibratedTh = baseline * 0.75;
+        }
+      }
+
+      // Detección con refractoria + duración mínima.
+      if (ear < calibratedTh && !closed) {
+        if (now - lastBlinkEndMs < REFR_MS) return;
         closed = true;
-        closeStart = performance.now();
-      } else if (ear >= TH && closed) {
+        closeStart = now;
+      } else if (ear >= calibratedTh && closed) {
         closed = false;
-        bio.blink.count++;
-        bio.blink.durations.push(performance.now() - closeStart);
+        const duration = now - closeStart;
+        if (duration >= MIN_CLOSURE_MS) {
+          bio.blink.count++;
+          bio.blink.durations.push(duration);
+          lastBlinkEndMs = now;
+        }
       }
     }, 33);
   });

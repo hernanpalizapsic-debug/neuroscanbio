@@ -21,6 +21,54 @@ import { getSession } from './auth-bridge.js';
 
 const RESET_URL = import.meta.env.VITE_RESET_URL || 'https://reset30.vercel.app';
 
+// ============================================================
+//  Sanity gates fisiológicos (last-mile pre-write)
+// ============================================================
+//
+// Rangos plausibles a nivel poblacional. Cualquier valor fuera se
+// considera artefacto de medición y NO se escribe a Firestore.
+// Preferimos "no medible" (null / ok:false) a un número imposible.
+//
+// Los módulos internos (rppg.js, etc.) ya aplican sus propios rangos,
+// pero este es el gate de belt-and-suspenders justo antes del setDoc.
+
+const BPM_MIN = 40, BPM_MAX = 180;
+const RMSSD_MIN = 5, RMSSD_MAX = 200;
+const BLINKRATE_MIN = 5, BLINKRATE_MAX = 60;
+
+const inRange = (v, lo, hi) => v != null && Number.isFinite(v) && v >= lo && v <= hi;
+
+/**
+ * Aplica sanity gates a un bloque hrv/hrv_dedo. Si bpm queda fuera de
+ * rango, el bloque entero se degrada a {ok:false} (bpm es la métrica
+ * primaria — sin bpm el resto no tiene sentido). Si rmssd queda fuera,
+ * solo esa métrica se anula.
+ */
+function sanitizeHrv(hrv) {
+  if (!hrv || hrv.ok !== true) return hrv || null;
+  if (!inRange(hrv.bpm, BPM_MIN, BPM_MAX)) {
+    // BPM inverosímil → degradamos todo el bloque.
+    return {
+      ok: false,
+      confidence: 'Ninguna',
+      ...(hrv.snr != null && { snr: hrv.snr }),
+    };
+  }
+  const rmssdOk = hrv.rmssd == null || inRange(hrv.rmssd, RMSSD_MIN, RMSSD_MAX);
+  return {
+    ...hrv,
+    rmssd: rmssdOk ? hrv.rmssd : null,
+    sdnn: rmssdOk ? hrv.sdnn : null,
+    ...(hrv.rmssd_confidence != null && {
+      rmssd_confidence: rmssdOk ? hrv.rmssd_confidence : 'Ninguna',
+    }),
+  };
+}
+
+function sanitizeBlinkRate(rate) {
+  return inRange(rate, BLINKRATE_MIN, BLINKRATE_MAX) ? rate : null;
+}
+
 export class WriteMetricsError extends Error {
   /**
    * @param {'AUTH_FAILED'|'STANDALONE'|'FIRESTORE_FAILED'} code
@@ -58,24 +106,32 @@ function toMedicion(payload, tipo) {
         fechaSueno: null,
         confianza: 'Ninguna',
       },
-      camara: {
-        disponible: true,
-        // fuentes.camara.hrv ahora contiene la rPPG (POS + FFT + SNR) — sesión
-        // sin dedo aún se registra con datos de cámara. El HRV del dedo se
-        // preserva en hrv_dedo (opcional) para cross-validación / histórico.
-        hrv: payload.rppg,
-        hrv_dedo: payload.hrv,
-        oculomotor: {
-          blinkRate: payload.blinkRate,
-          avgBlinkMs: payload.avgBlinkMs,
-          baselineEAR: payload.baselineEAR,
-          headStability: payload.headStability,
-          saccadeTrackError: payload.saccadeTrackError,
-        },
-        plr: payload.plr,
-        // confianza_general viene del HR de rPPG (fuente cámara canónica).
-        confianza_general: payload.rppg?.confidence || 'Ninguna',
-      },
+      camara: (() => {
+        // Sanity gates pre-write: valores fuera del rango fisiológico se
+        // convierten en null / ok:false ANTES de escribir a Firestore.
+        // Un número inventado corrompe el histórico y la comparación con
+        // wearables reales — preferimos "no medible".
+        const hrvSafe = sanitizeHrv(payload.rppg);
+        const hrvDedoSafe = sanitizeHrv(payload.hrv);
+        const blinkRateSafe = sanitizeBlinkRate(payload.blinkRate);
+        return {
+          disponible: true,
+          // fuentes.camara.hrv contiene la rPPG (POS + FFT + SNR).
+          hrv: hrvSafe,
+          // HRV del dedo (finger PPG con flash trasero) — path distinto.
+          hrv_dedo: hrvDedoSafe,
+          oculomotor: {
+            blinkRate: blinkRateSafe,
+            avgBlinkMs: payload.avgBlinkMs,
+            baselineEAR: payload.baselineEAR,
+            headStability: payload.headStability,
+            saccadeTrackError: payload.saccadeTrackError,
+          },
+          plr: payload.plr,
+          // confianza_general viene del HR sanitizado.
+          confianza_general: hrvSafe?.confidence || 'Ninguna',
+        };
+      })(),
       // El quiz local usa keys en inglés (stress/energy/fatigue); el contrato
       // Firestore las quiere en castellano. Mapeamos acá para no tocar state.js.
       subjetivo: {
